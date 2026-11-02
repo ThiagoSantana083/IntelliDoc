@@ -4,8 +4,12 @@
 #    Assistente de Documentação Inteligente
 # ======================================
 
+# Importanto dependências para o projeto
+from pathlib import Path
+
 # Lista que armazenará os documentos cadastrados
 documentos = []
+
 
 def cadastrar_documento():
     print("\n--- Cadastro de Documento ---")
@@ -13,15 +17,23 @@ def cadastrar_documento():
     nome = input("Nome do documento: ")
     caminho = input("Caminho do arquivo: ")
 
-    documento = {
-        "nome": nome,
-        "caminho": caminho,
-        "processado": False
-    }
+    # Verifica se o documento é válido
+    if validar_documento(caminho):
 
-    documentos.append(documento)
+        documento = {
+            "nome": nome,
+            "caminho": caminho,
+            "processado": False
+        }
 
-    print("\nDocumento cadastrado com sucesso!")
+        documentos.append(documento)
+
+        print("\nDocumento cadastrado com sucesso!")
+
+    else:
+        print("\nNão foi possível cadastrar o documento.")
+        print("Arquivo inexistente ou inválido.")
+
 
 
 def listar_documentos():
@@ -91,6 +103,13 @@ def excluir_documento():
 
     print("\nDocumento não encontrado.")
 
+def validar_documento(caminho):
+    arquivo = Path(caminho)
+
+    if arquivo.exists() and arquivo.is_file() and arquivo.suffix.lower() == ".pdf":
+        return True
+    else:
+        return False
 
 def main():
 
