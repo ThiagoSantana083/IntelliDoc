@@ -448,6 +448,15 @@ with st.sidebar:
         st.caption("Nenhum documento indexado ainda.")
 
     st.divider()
+    st.subheader(":material/contrast: Aparência")
+    modo_atual = "noturno" if st.context.theme.type == "dark" else "claro"
+    st.caption(
+        f"Modo {modo_atual} ativo. Para alternar entre claro e noturno, abra o menu "
+        ":material/more_vert: no canto superior direito → **Settings** → *Choose app theme* "
+        "(Light, Dark ou seguir o sistema)."
+    )
+
+    st.divider()
     if st.button("Limpar conversa", icon=":material/delete_sweep:", width="stretch"):
         st.session_state.mensagens = []
         st.rerun()

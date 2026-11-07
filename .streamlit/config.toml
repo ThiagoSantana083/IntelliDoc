@@ -1,8 +1,44 @@
-# Identidade visual do IntelliDoc (mesma cor do cabeçalho)
+# Identidade visual do IntelliDoc com modo claro e modo noturno.
+#
+# Com [theme.light] e [theme.dark] definidos, o app segue o tema do
+# sistema e o usuário pode trocar em ⋮ (canto superior direito) →
+# Settings → "Choose app theme": Light, Dark ou "Use system setting".
+
 [theme]
+baseRadius = "0.75rem"
+showSidebarBorder = true
+
+[theme.light]
 primaryColor = "#4F46E5"
 linkColor = "#4F46E5"
-baseRadius = "0.75rem"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F5FA"
+textColor = "#111827"
+borderColor = "#E5E7EB"
+grayColor = "#6B7280"
+violetColor = "#7C3AED"
+blueColor = "#2563EB"
+
+[theme.dark]
+primaryColor = "#6366F1"
+linkColor = "#A5B4FC"
+backgroundColor = "#0F111A"
+secondaryBackgroundColor = "#1A1D2B"
+textColor = "#E5E7EB"
+borderColor = "#2A2F42"
+grayColor = "#9CA3AF"
+violetColor = "#A78BFA"
+blueColor = "#60A5FA"
+
+[theme.light.sidebar]
+backgroundColor = "#F7F7FB"
+secondaryBackgroundColor = "#FFFFFF"
+borderColor = "#E5E7EB"
+
+[theme.dark.sidebar]
+backgroundColor = "#131623"
+secondaryBackgroundColor = "#1A1D2B"
+borderColor = "#2A2F42"
 
 [server]
 # Tamanho máximo de cada PDF enviado (MB)

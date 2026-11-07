@@ -16,7 +16,14 @@ from catalogo import config
 CAMPOS_PRODUTO = (
     "codigo", "nome", "tipo", "preco_texto", "preco_valor", "familia_olfativa",
     "publico", "linha", "descricao", "pagina", "outras_paginas", "imagem", "imagem_status",
+    "imagem_tipo", "caixa",
 )
+
+# Colunas acrescentadas depois da primeira versão (migração automática).
+_COLUNAS_NOVAS = {
+    "imagem_tipo": "TEXT",  # isolada (fundo removido) | recorte (recorte da página)
+    "caixa": "TEXT",        # posição da foto na página: "x0,y0,x1,y1" em pontos do PDF
+}
 
 _ESQUEMA = """
 CREATE TABLE IF NOT EXISTS documentos (
@@ -64,6 +71,20 @@ def _conectar():
 def inicializar():
     with closing(_conectar()) as conexao, conexao:
         conexao.executescript(_ESQUEMA)
+        existentes = {linha["name"] for linha in conexao.execute("PRAGMA table_info(produtos)")}
+        for coluna, tipo in _COLUNAS_NOVAS.items():
+            if coluna not in existentes:
+                conexao.execute(f"ALTER TABLE produtos ADD COLUMN {coluna} {tipo}")
+
+
+def atualizar_foto(produto_id, imagem, imagem_tipo, caixa):
+    """Atualiza somente a foto de um produto (sem tocar nos demais dados)."""
+    inicializar()
+    with closing(_conectar()) as conexao, conexao:
+        conexao.execute(
+            "UPDATE produtos SET imagem = ?, imagem_tipo = ?, caixa = ? WHERE id = ?",
+            (imagem, imagem_tipo, caixa, produto_id),
+        )
 
 
 def obter_documento(documento):

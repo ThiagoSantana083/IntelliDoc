@@ -19,7 +19,7 @@ import pymupdf
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from catalogo import config, imagens
+from catalogo import config, fotos, imagens
 from catalogo.texto import (
     converter_preco,
     normalizar,
@@ -170,7 +170,7 @@ def _ancora(pagina, produto):
 
 def _nome_arquivo_imagem(produto, numero_pagina, indice):
     base = produto["codigo"] or re.sub(r"[^a-z0-9]+", "-", normalizar(produto["nome"]))[:40]
-    return f"p{numero_pagina:03d}_{indice:02d}_{base}.jpg"
+    return f"p{numero_pagina:03d}_{indice:02d}_{base}.webp"
 
 
 # --------------------------------------
@@ -256,8 +256,10 @@ def processar_pagina(caminho_pdf, indice_pagina, pasta_imagens):
             if not imagens.verificar_recorte(foto, descricao):
                 produto["imagem_status"] = "nao_confirmada"
                 continue
+            # Foto isolada (fundo removido); se não for aprovada, recorte clareado
             destino = Path(pasta_imagens) / _nome_arquivo_imagem(produto, numero_pagina, posicao)
-            imagens.salvar_foto(foto, destino)
+            produto["imagem_tipo"] = fotos.gerar_foto(pagina, caixa, descricao, destino)
+            produto["caixa"] = fotos.caixa_para_texto(caixa)
             try:
                 produto["imagem"] = destino.relative_to(config.BASE_DIR).as_posix()
             except ValueError:

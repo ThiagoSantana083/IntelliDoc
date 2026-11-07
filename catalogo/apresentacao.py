@@ -4,10 +4,11 @@ import math
 from functools import lru_cache
 
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont
+from PIL import ImageDraw, ImageFont
 
 from catalogo import config
 from catalogo.analise import caminho_imagem
+from catalogo.fotos import base_cartao
 from catalogo.texto import escapar_markdown
 
 PRODUTOS_POR_PAGINA = 12
@@ -24,9 +25,9 @@ _ROTULOS_PUBLICO = {
 def _imagem_indisponivel():
     """Moldura neutra (mesma proporção dos cartões) para produtos sem foto."""
     largura, altura = config.LARGURA_CARTAO, config.ALTURA_CARTAO
-    imagem = Image.new("RGB", (largura, altura), (241, 242, 246))
+    imagem, _mascara = base_cartao()  # mesmo fundo claro e cantos das fotos
     desenho = ImageDraw.Draw(imagem)
-    desenho.rectangle([24, 24, largura - 24, altura - 24], outline=(210, 212, 220), width=3)
+    desenho.rounded_rectangle([28, 28, largura - 28, altura - 28], 24, outline=(210, 212, 220), width=3)
     texto = "Imagem não localizada"
     fonte = _fonte(34)
     caixa = desenho.textbbox((0, 0), texto, font=fonte)

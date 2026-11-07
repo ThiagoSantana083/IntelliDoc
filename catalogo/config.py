@@ -28,6 +28,9 @@ MODELO_VERIFICACAO = os.getenv("INTELLIDOC_MODELO_VERIFICACAO", "gpt-4.1-mini")
 # Modelo usado para interpretar perguntas e filtrar produtos.
 MODELO_TEXTO = os.getenv("INTELLIDOC_MODELO_TEXTO", "gpt-4o-mini")
 
+# Modelo local (rembg) usado para separar o produto do fundo da foto.
+MODELO_RECORTE = os.getenv("INTELLIDOC_MODELO_RECORTE", "isnet-general-use")
+
 # Quantidade de páginas processadas em paralelo.
 TRABALHADORES = max(1, int(os.getenv("INTELLIDOC_TRABALHADORES", "6")))
 

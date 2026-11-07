@@ -42,6 +42,13 @@ class CaixaRefinada(BaseModel):
     y1: int
 
 
+class VerificacaoIsolada(BaseModel):
+    aprovada: bool = Field(
+        description="True se a imagem mostra só a embalagem do produto, inteira e sem outros objetos."
+    )
+    motivo: str
+
+
 class Verificacao(BaseModel):
     corresponde: bool = Field(
         description="True somente se o produto principal do recorte é o produto indicado."
@@ -53,6 +60,13 @@ class Verificacao(BaseModel):
 def _modelo_refinamento():
     return ChatOpenAI(model=config.MODELO_VISAO, temperature=0, max_retries=4).with_structured_output(
         CaixaRefinada, method="json_schema", strict=True
+    )
+
+
+@lru_cache(maxsize=1)
+def _modelo_verificacao_isolada():
+    return ChatOpenAI(model=config.MODELO_VERIFICACAO, temperature=0, max_retries=4).with_structured_output(
+        VerificacaoIsolada, method="json_schema", strict=True
     )
 
 
@@ -176,6 +190,34 @@ def verificar_recorte(imagem, descricao_produto):
     )
     resposta = _modelo_verificacao().invoke([mensagem_com_imagem(instrucao, imagem, detalhe="high")])
     return resposta.corresponde
+
+
+def verificar_foto_isolada(imagem, referencia, descricao_produto):
+    """Confere se a foto com fundo removido ficou boa para o cartão.
+
+    referencia: trecho original da página ao redor do produto, usado para
+    comparar se a embalagem ficou inteira.
+    """
+    instrucao = (
+        f"A IMAGEM 1 é um trecho original de um catálogo com o produto '{descricao_produto}'. "
+        "A IMAGEM 2 é a mesma embalagem separada do fundo, sobre fundo claro.\n"
+        "Responda aprovada=true somente se, comparando as duas: "
+        "(1) a IMAGEM 2 mostra a embalagem desse produto; "
+        "(2) a embalagem está inteira — nenhuma parte visível na IMAGEM 1 (tampa, laterais, base, "
+        "rótulo) foi cortada ou apagada na IMAGEM 2; "
+        "(3) não restaram objetos que não fazem parte do produto, como mãos, pessoas, frutas, flores, "
+        "madeira, decorações ou outros produtos. Kits podem ter vários itens da própria embalagem."
+    )
+    mensagem = HumanMessage(
+        content=[
+            {"type": "text", "text": instrucao},
+            {"type": "text", "text": "IMAGEM 1 (original):"},
+            {"type": "image_url", "image_url": {"url": para_data_url(referencia), "detail": "high"}},
+            {"type": "text", "text": "IMAGEM 2 (separada do fundo):"},
+            {"type": "image_url", "image_url": {"url": para_data_url(imagem), "detail": "high"}},
+        ]
+    )
+    return _modelo_verificacao_isolada().invoke([mensagem]).aprovada
 
 
 # --------------------------------------
