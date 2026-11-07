@@ -25,8 +25,8 @@ from typing import Literal, Optional
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from catalogo import config, repositorio
-from catalogo.texto import formatar_preco, normalizar, tokens
+from catalogo import analise, config, repositorio
+from catalogo.texto import escapar_markdown, formatar_preco, normalizar, tokens
 
 TAMANHO_LOTE = 40
 
@@ -47,8 +47,17 @@ _PUBLICO_NO_NOME = {
 
 class Interpretacao(BaseModel):
     tipo: Literal["produtos", "geral"] = Field(
-        description="'produtos' para encontrar, listar, mostrar ou consultar preço/dados de produtos; "
+        description="'produtos' para encontrar, listar, contar, analisar ou consultar preço/dados de produtos; "
         "'geral' para dúvidas sobre o conteúdo textual do documento."
+    )
+    analise: Literal["listar", "contar", "imagens", "duplicados", "precos"] = Field(
+        description="O que o usuário quer saber sobre os produtos filtrados: 'listar' (mostrar/quais são), "
+        "'contar' (quantos existem), 'imagens' (quantos têm ou não têm imagem/foto), "
+        "'duplicados' (repetidos/duplicados), 'precos' (preço médio, faixa de preços, mais caro e mais barato juntos)."
+    )
+    imagem: Optional[Literal["com", "sem"]] = Field(
+        description="Filtro por foto quando a pergunta pede para LISTAR os produtos com foto ('com') ou "
+        "sem foto ('sem'). null quando a pergunta só quer contar imagens."
     )
     termo: Optional[str] = Field(
         description="Nome, linha ou coleção específica citada (ex.: 'Frangipani Flower 100ml', "
@@ -93,7 +102,8 @@ def _modelo_selecao():
 @dataclass
 class ResultadoBusca:
     interpretacao: Interpretacao
-    produtos: list = field(default_factory=list)
+    produtos: list = field(default_factory=list)   # todos os produtos que atendem aos filtros
+    exibir: list = field(default_factory=list)     # produtos mostrados em cartões
     total_verificado: int = 0
     documentos_pendentes: list = field(default_factory=list)
     texto: str = ""
@@ -117,7 +127,13 @@ def interpretar(pergunta):
         "- 'Mostre os produtos da linha Mahogany For Men' -> termo='Mahogany For Men'\n"
         "- 'Quais perfumes têm fragrância Oriental Baunilha?' -> familia_olfativa='Oriental Baunilha', "
         "categoria='perfumes'\n"
-        "- 'Quais são os produtos masculinos?' -> publico='masculino'\n"
+        "- 'Quais são os produtos masculinos?' -> publico='masculino', analise='listar'\n"
+        "- 'Quantos produtos masculinos existem?' -> publico='masculino', analise='contar'\n"
+        "- 'Quantos produtos masculinos possuem imagem associada?' -> publico='masculino', analise='imagens'\n"
+        "- 'Quais produtos não têm foto?' -> analise='listar', imagem='sem'\n"
+        "- 'Existem produtos masculinos duplicados na listagem?' -> publico='masculino', analise='duplicados'\n"
+        "- 'Qual a faixa de preço dos perfumes femininos?' -> publico='feminino', categoria='perfumes', analise='precos'\n"
+        "- 'Qual o perfume mais barato?' -> categoria='perfumes', analise='listar', ordenacao='menor_preco', limite=1\n"
         "Use ordenacao='catalogo' quando não houver pedido de ordenação.\n\n"
         f"Pergunta: {pergunta}"
     )
@@ -220,7 +236,47 @@ def _selecionar_lote(criterio, lote):
     return [i for i in resposta.ids if i in validos]
 
 
+# Categorias comuns reconhecidas em código pelo tipo/nome do produto
+# (palavra da pergunta -> termos que precisam aparecer no tipo ou no nome).
+_CATEGORIAS = {
+    "perfume": ("fragrancia", "eau de", "colonia", "parfum", "body splash"),
+    "fragrancia": ("fragrancia", "eau de", "colonia", "parfum", "body splash"),
+    "colonia": ("colonia",),
+    "kit": ("kit",),
+    "presente": ("kit", "presente"),
+    "sabonete": ("sabonete",),
+    "hidratante": ("hidratante",),
+    "desodorante": ("desodorante",),
+    "shampoo": ("shampoo",),
+    "condicionador": ("condicionador",),
+    "oleo": ("oleo",),
+    "body splash": ("body splash",),
+    "refil": ("refil",),
+    "ambiente": ("ambiente", "difusor", "aromatizador"),
+    "difusor": ("difusor",),
+}
+
+
+def _categoria_conhecida(categoria):
+    """Termos de busca para uma categoria comum, ou None se não for reconhecida."""
+    texto = normalizar(categoria)
+    palavras = {p.rstrip("s") for p in texto.split()} | {texto.rstrip("s")}
+    termos = []
+    for chave, valores in _CATEGORIAS.items():
+        if chave in palavras or chave in texto:
+            termos.extend(valores)
+    return tuple(dict.fromkeys(termos)) or None
+
+
 def _filtrar_categoria(produtos, categoria):
+    termos = _categoria_conhecida(categoria)
+    if termos:
+        return [
+            p for p in produtos
+            if any(t in normalizar(f"{p['tipo'] or ''} {p['nome']}") for t in termos)
+        ]
+
+    # Categoria não reconhecida: o modelo avalia todos os candidatos em lotes.
     lotes = [produtos[i:i + TAMANHO_LOTE] for i in range(0, len(produtos), TAMANHO_LOTE)]
     selecionados = set()
     with ThreadPoolExecutor(max_workers=min(6, len(lotes))) as executor:
@@ -257,26 +313,31 @@ def _descrever_filtros(interp):
         partes.append(f"preço {'a partir de' if interp.preco_min_inclusivo else 'acima de'} {formatar_preco(interp.preco_min)}")
     if interp.preco_max is not None:
         partes.append(f"preço {'até' if interp.preco_max_inclusivo else 'abaixo de'} {formatar_preco(interp.preco_max)}")
+    if interp.imagem == "com" and interp.analise != "imagens":
+        partes.append("com imagem")
+    elif interp.imagem == "sem" and interp.analise != "imagens":
+        partes.append("sem imagem")
     return ", ".join(partes) or "todos os produtos"
 
 
-def _montar_texto(resultado, catalogos):
-    interp = resultado.interpretacao
-    produtos = resultado.produtos
-    linhas = []
-
-    if len(produtos) == 1:
+def _texto_listagem(produtos, interp):
+    # Frase de "preço do produto" só quando a pergunta cita um produto específico.
+    if len(produtos) == 1 and interp.termo:
         p = produtos[0]
         nome = " ".join(x for x in (p["tipo"], p["nome"]) if x)
         preco = f"custa **{p['preco_texto']}**" if p["preco_texto"] else "não tem preço indicado no catálogo"
-        linhas.append(f"**{nome}** {preco}. Ele aparece na página {p['pagina']} de *{p['nome_arquivo']}*.")
-    else:
-        linhas.append(f"Encontrei **{len(produtos)} produtos** para: {_descrever_filtros(interp)}.")
+        return f"**{nome}** {preco}. Ele aparece na página {p['pagina']} de *{p['nome_arquivo']}*."
+    n = len(produtos)
+    return f"Encontrei **{n} {'produto' if n == 1 else 'produtos'}** para: {_descrever_filtros(interp)}."
 
-    linhas.append(
+
+def _observacoes(resultado, catalogos):
+    """Notas de transparência comuns a todas as respostas sobre produtos."""
+    interp = resultado.interpretacao
+    linhas = [
         f"Verifiquei todos os {resultado.total_verificado} produtos identificados em "
-        f"{catalogos} catálogo(s) processado(s), usando apenas as informações impressas nas páginas."
-    )
+        f"{catalogos} catálogo(s) processado(s), usando apenas os dados já armazenados."
+    ]
     if interp.preco_min is not None or interp.preco_max is not None:
         linhas.append("Produtos sem preço identificado não entram no filtro de preço.")
     if interp.publico:
@@ -286,43 +347,16 @@ def _montar_texto(resultado, catalogos):
         )
     if interp.familia_olfativa:
         linhas.append("Só entram produtos cuja página informa a família olfativa.")
-    if interp.limite:
+    if interp.analise == "listar" and interp.limite:
         linhas.append(f"Exibindo no máximo {interp.limite} produto(s), conforme pedido.")
     if resultado.documentos_pendentes:
         nomes = ", ".join(resultado.documentos_pendentes)
         linhas.append(f"Atenção: os produtos de **{nomes}** ainda não foram extraídos e não entraram nesta busca.")
-    return "\n\n".join(linhas).replace("$", "\\$")
+    return linhas
 
 
-# --------------------------------------
-# Função principal
-# --------------------------------------
-def buscar_produtos(pergunta, documentos_indexados=()):
-    """Retorna ResultadoBusca, ou None quando a pergunta não é sobre produtos.
-
-    documentos_indexados: caminhos ("source") presentes no ChromaDB, usados
-    para avisar quais documentos ainda não tiveram os produtos extraídos.
-    """
-    catalogo = repositorio.listar_produtos()
-    if not catalogo:
-        return None
-
-    interp = interpretar(pergunta)
-    # Filtros próprios de produtos confirmam a intenção, mesmo que a
-    # classificação do modelo oscile entre 'produtos' e 'geral'.
-    tem_filtro_de_produto = any(
-        valor is not None
-        for valor in (interp.publico, interp.familia_olfativa, interp.categoria, interp.preco_min, interp.preco_max)
-    )
-    if interp.tipo != "produtos" and not tem_filtro_de_produto:
-        return None
-
-    resumo = repositorio.resumo_documentos()
-    pendentes = [
-        Path(doc).name for doc in documentos_indexados
-        if doc not in resumo or resumo[doc]["status"] != "completo"
-    ]
-
+def _filtrar(catalogo, interp):
+    """Aplica todos os filtros da pergunta (sem remover repetições)."""
     candidatos = catalogo
     if interp.termo:
         por_termo = _filtrar_termo(candidatos, interp.termo, interp.tipo_produto)
@@ -335,23 +369,93 @@ def buscar_produtos(pergunta, documentos_indexados=()):
     candidatos = _filtrar_preco(candidatos, interp)
     if interp.categoria and candidatos:
         candidatos = _filtrar_categoria(candidatos, interp.categoria)
+    if interp.imagem == "com":
+        candidatos = [p for p in candidatos if analise.caminho_imagem(p)]
+    elif interp.imagem == "sem":
+        candidatos = [p for p in candidatos if not analise.caminho_imagem(p)]
+    return candidatos
 
-    candidatos = _sem_repeticao(candidatos)
 
+def _ordenar(produtos, interp):
     if interp.ordenacao == "menor_preco":
-        candidatos.sort(key=lambda p: (p["preco_valor"] is None, p["preco_valor"] or 0))
+        produtos.sort(key=lambda p: (p["preco_valor"] is None, p["preco_valor"] or 0))
     elif interp.ordenacao == "maior_preco":
-        candidatos.sort(key=lambda p: (p["preco_valor"] is None, -(p["preco_valor"] or 0)))
+        produtos.sort(key=lambda p: (p["preco_valor"] is None, -(p["preco_valor"] or 0)))
+    return produtos
 
-    if interp.limite and interp.limite > 0:
-        candidatos = candidatos[: interp.limite]
+
+# --------------------------------------
+# Função principal
+# --------------------------------------
+def buscar_produtos(pergunta, documentos_indexados=()):
+    """Retorna ResultadoBusca, ou None quando a pergunta não é sobre produtos.
+
+    A resposta depende do que foi perguntado (interp.analise):
+      listar      cartões dos produtos encontrados
+      contar      quantidade + nomes
+      imagens     quantos têm e quantos não têm imagem (com os nomes)
+      duplicados  duplicados e possíveis duplicados (antes de remover repetições)
+      precos      menor, maior e média de preço
+
+    Só a interpretação da pergunta usa a API; as análises usam os dados
+    estruturados já armazenados.
+
+    documentos_indexados: caminhos ("source") presentes no ChromaDB, usados
+    para avisar quais documentos ainda não tiveram os produtos extraídos.
+    """
+    catalogo = repositorio.listar_produtos()
+    if not catalogo:
+        return None
+
+    interp = interpretar(pergunta)
+    # Filtros e análises próprios de produtos confirmam a intenção, mesmo que
+    # a classificação do modelo oscile entre 'produtos' e 'geral'.
+    tem_filtro_de_produto = any(
+        valor is not None
+        for valor in (interp.publico, interp.familia_olfativa, interp.categoria,
+                      interp.preco_min, interp.preco_max, interp.imagem)
+    ) or interp.analise in ("imagens", "duplicados")
+    if interp.tipo != "produtos" and not tem_filtro_de_produto:
+        return None
+
+    resumo = repositorio.resumo_documentos()
+    pendentes = [
+        Path(doc).name for doc in documentos_indexados
+        if doc not in resumo or resumo[doc]["status"] != "completo"
+    ]
+
+    # Ao analisar imagens, os dois grupos (com e sem foto) precisam ser contados.
+    if interp.analise == "imagens":
+        interp.imagem = None
+
+    filtrados = _filtrar(catalogo, interp)
+    unicos = _ordenar(_sem_repeticao(filtrados), interp)
 
     resultado = ResultadoBusca(
         interpretacao=interp,
-        produtos=candidatos,
+        produtos=unicos,
         total_verificado=len(catalogo),
         documentos_pendentes=pendentes,
     )
-    if candidatos:
-        resultado.texto = _montar_texto(resultado, len(resumo))
+    if not filtrados:
+        return resultado  # sem texto: a interface usa o RAG de texto
+
+    descricao = _descrever_filtros(interp)
+    if interp.analise == "duplicados":
+        # Usa a lista ANTES de remover repetições, senão os duplicados sumiriam.
+        principal, resultado.exibir = analise.texto_duplicados(filtrados, descricao)
+    elif interp.analise == "imagens":
+        principal, resultado.exibir = analise.texto_imagens(unicos, descricao)
+    elif interp.analise == "contar":
+        principal, resultado.exibir = analise.texto_contagem(unicos, descricao), unicos
+    elif interp.analise == "precos" and len(unicos) > 1:
+        principal, resultado.exibir = analise.texto_precos(unicos, descricao)
+    else:
+        if interp.limite and interp.limite > 0:
+            unicos = unicos[: interp.limite]
+        resultado.produtos = unicos
+        principal, resultado.exibir = _texto_listagem(unicos, interp), unicos
+
+    texto = principal + "\n\n" + "\n\n".join(_observacoes(resultado, len(resumo)))
+    resultado.texto = escapar_markdown(texto)  # "R$" não pode virar fórmula LaTeX
     return resultado

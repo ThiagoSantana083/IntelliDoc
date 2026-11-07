@@ -485,12 +485,13 @@ if pergunta is not None:
                 indexados = list(documentos) if documentos else []
                 resultado = busca.buscar_produtos(pergunta, indexados)
 
-            if resultado and resultado.produtos:
+            if resultado and resultado.texto:
+                # Listagem, contagem, imagens, duplicados ou preços (dados já armazenados)
                 resposta = {
                     "role": "assistant",
                     "content": resultado.texto,
                     "formatado": True,
-                    "produto_ids": [p["id"] for p in resultado.produtos],
+                    "produto_ids": [p["id"] for p in resultado.exibir],
                 }
             else:
                 # 2) Perguntas gerais (ou nenhum produto encontrado): RAG de texto

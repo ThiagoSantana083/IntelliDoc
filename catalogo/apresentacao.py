@@ -2,12 +2,12 @@
 
 import math
 from functools import lru_cache
-from pathlib import Path
 
 import streamlit as st
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from catalogo import config
+from catalogo.analise import caminho_imagem
 from catalogo.texto import escapar_markdown
 
 PRODUTOS_POR_PAGINA = 12
@@ -28,26 +28,28 @@ def _imagem_indisponivel():
     desenho = ImageDraw.Draw(imagem)
     desenho.rectangle([24, 24, largura - 24, altura - 24], outline=(210, 212, 220), width=3)
     texto = "Imagem não localizada"
-    caixa = desenho.textbbox((0, 0), texto, font_size=34)
+    fonte = _fonte(34)
+    caixa = desenho.textbbox((0, 0), texto, font=fonte)
     desenho.text(
         ((largura - (caixa[2] - caixa[0])) / 2, (altura - (caixa[3] - caixa[1])) / 2),
-        texto, fill=(120, 124, 140), font_size=34,
+        texto, fill=(120, 124, 140), font=fonte,
     )
     return imagem
 
 
-def _caminho_imagem(produto):
-    if not produto.get("imagem"):
-        return None
-    caminho = Path(produto["imagem"])
-    if not caminho.is_absolute():
-        caminho = config.BASE_DIR / caminho
-    return caminho if caminho.is_file() else None
+def _fonte(tamanho):
+    """Fonte do sistema com acentos; a fonte padrão do Pillow não desenha 'ã'."""
+    for nome in ("segoeui.ttf", "arial.ttf", "DejaVuSans.ttf", "Arial.ttf", "Helvetica.ttc"):
+        try:
+            return ImageFont.truetype(nome, tamanho)
+        except OSError:
+            continue
+    return ImageFont.load_default(size=tamanho)
 
 
 def exibir_cartao(produto):
     nome = produto["nome"]
-    caminho = _caminho_imagem(produto)
+    caminho = caminho_imagem(produto)
 
     with st.container(border=True, height="stretch"):
         if caminho:
