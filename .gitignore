@@ -3,3 +3,11 @@ __pycache__/
 *.pyc
 .env
 database/
+# Dados gerados pelo IntelliDoc (recriados ao processar os PDFs)
+data/db/
+data/imagens/
+data/produtos.sqlite3
+
+# Arquivos locais de ferramentas
+tempCodeRunnerFile.py
+.claude/

@@ -1,0 +1,9 @@
+# Identidade visual do IntelliDoc (mesma cor do cabeçalho)
+[theme]
+primaryColor = "#4F46E5"
+linkColor = "#4F46E5"
+baseRadius = "0.75rem"
+
+[server]
+# Tamanho máximo de cada PDF enviado (MB)
+maxUploadSize = 200

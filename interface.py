@@ -6,8 +6,9 @@
 # Executar a partir da pasta do projeto:
 #     streamlit run interface.py
 #
-# A interface apenas reutiliza as funções de criar_db.py.
-# O mecanismo RAG (chunks, embeddings, busca e geração) não é alterado.
+# Este arquivo cuida apenas da interface. A lógica fica em:
+#   criar_db.py  -> RAG de texto (chunks, ChromaDB, respostas)  [inalterado]
+#   catalogo/    -> produtos, fotos, busca no catálogo e cartões
 
 import hashlib
 import html
@@ -33,6 +34,10 @@ load_dotenv(BASE_DIR / ".env")
 
 import openai  # noqa: E402  (importado após carregar o .env)
 
+from catalogo import busca, repositorio  # noqa: E402
+from catalogo.apresentacao import exibir_grade  # noqa: E402
+from catalogo.processamento import processar_catalogo  # noqa: E402
+from catalogo.texto import escapar_markdown  # noqa: E402
 from criar_db import (  # noqa: E402
     validar_documento,
     extrair_paginas_pdf,
@@ -51,25 +56,24 @@ st.set_page_config(
     page_title="IntelliDoc",
     page_icon="📄",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",  # aberta no computador, recolhida no celular
 )
 
-st.markdown(
+# Identidade visual do IntelliDoc (cabeçalho e etiquetas de fonte)
+st.html(
     """
     <style>
-    .block-container { padding-top: 2rem; max-width: 1100px; }
-
     .hero {
         padding: 1.6rem 1.8rem;
         border-radius: 16px;
         background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
         color: #FFFFFF;
-        margin-bottom: 1.5rem;
+        margin-bottom: .5rem;
     }
-    .hero h1 { color: #FFFFFF; margin: 0; font-size: 2.2rem; }
+    .hero h1 { color: #FFFFFF; margin: 0; font-size: 2.2rem; padding: 0; }
     .hero p  { color: #E0E7FF; margin: .35rem 0 0; font-size: 1.05rem; }
 
-    .fontes { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .6rem; }
+    .fontes { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .2rem; }
     .fonte {
         display: inline-flex; align-items: center; gap: .35rem;
         padding: .3rem .7rem; border-radius: 999px; font-size: .85rem;
@@ -79,13 +83,11 @@ st.markdown(
     }
 
     @media (max-width: 640px) {
-        .block-container { padding-left: 1rem; padding-right: 1rem; }
         .hero { padding: 1.1rem 1.2rem; }
         .hero h1 { font-size: 1.6rem; }
     }
     </style>
-    """,
-    unsafe_allow_html=True,
+    """
 )
 
 
@@ -112,17 +114,16 @@ def hash_arquivo(caminho):
 
 
 def listar_documentos_indexados():
-    """Retorna {nome_do_arquivo: quantidade_de_chunks} a partir do ChromaDB."""
+    """Retorna {caminho_do_documento: quantidade_de_chunks} a partir do ChromaDB."""
     dados = obter_banco().get(include=["metadatas"])
 
     contagem = {}
     for metadado in dados.get("metadatas") or []:
         if not metadado or "source" not in metadado:
             continue
-        nome = Path(metadado["source"]).name
-        contagem[nome] = contagem.get(nome, 0) + 1
+        contagem[metadado["source"]] = contagem.get(metadado["source"], 0) + 1
 
-    return dict(sorted(contagem.items()))
+    return dict(sorted(contagem.items(), key=lambda item: Path(item[0]).name.lower()))
 
 
 def documento_ja_indexado(caminho):
@@ -152,14 +153,18 @@ def processar_upload(arquivo_enviado, forcar=False):
         and hash_arquivo(destino) == hash_bytes(conteudo)
         and documento_ja_indexado(destino)
     ):
-        return {"status": "ignorado", "nome": nome}
+        return {"status": "ignorado", "nome": nome, "caminho": destino}
 
     destino.write_bytes(conteudo)
 
     if not validar_documento(destino):
         return {"status": "erro", "nome": nome, "mensagem": "Arquivo PDF inválido."}
 
-    paginas = extrair_paginas_pdf(destino)
+    try:
+        paginas = extrair_paginas_pdf(destino)
+    except Exception as erro:  # noqa: BLE001
+        print(f"[IntelliDoc] Erro ao ler {nome}: {erro!r}")
+        return {"status": "erro", "nome": nome, "mensagem": "Não foi possível ler o PDF (arquivo corrompido ou protegido)."}
 
     if not any(texto.strip() for texto in paginas):
         return {
@@ -174,9 +179,25 @@ def processar_upload(arquivo_enviado, forcar=False):
     return {
         "status": "processado",
         "nome": nome,
+        "caminho": destino,
         "paginas": len(paginas),
         "chunks": len(chunks),
     }
+
+
+def extrair_produtos(caminho, forcar=False):
+    """Extrai produtos e fotos exibindo uma barra de progresso."""
+    nome = Path(caminho).name
+    barra = st.progress(0.0, text=f"Identificando produtos e fotos em {nome}…")
+
+    def atualizar(feitas, total):
+        barra.progress(feitas / total, text=f"Analisando páginas de {nome}: {feitas}/{total}")
+
+    try:
+        resumo = processar_catalogo(caminho, forcar=forcar, progresso=atualizar)
+    finally:
+        barra.empty()
+    return resumo
 
 
 def extrair_fontes(resultados):
@@ -210,6 +231,8 @@ def mensagem_erro_openai(erro):
         return "Limite de uso ou créditos da OpenAI atingido. Tente novamente mais tarde."
     if isinstance(erro, openai.APIConnectionError):
         return "Não foi possível conectar à OpenAI. Verifique sua conexão com a internet."
+    if isinstance(erro, openai.NotFoundError):
+        return "O modelo configurado não está disponível para esta chave da OpenAI."
     if isinstance(erro, openai.APIError):
         return "A OpenAI retornou um erro ao processar a solicitação. Tente novamente."
     return None
@@ -224,12 +247,26 @@ def exibir_fontes(fontes):
         for f in fontes
     )
     st.markdown("**Fontes consultadas**")
-    st.markdown(f'<div class="fontes">{chips}</div>', unsafe_allow_html=True)
+    st.html(f'<div class="fontes">{chips}</div>')
 
     with st.expander("Ver trechos utilizados"):
         for fonte in fontes:
-            st.markdown(f"**{fonte['arquivo']} — página {fonte['pagina']}**")
-            st.caption(fonte["trecho"][:600] + ("…" if len(fonte["trecho"]) > 600 else ""))
+            st.markdown(f"**{escapar_markdown(fonte['arquivo'])} — página {fonte['pagina']}**")
+            st.caption(escapar_markdown(fonte["trecho"][:600] + ("…" if len(fonte["trecho"]) > 600 else "")))
+
+
+def exibir_mensagem(indice, mensagem):
+    """Exibe uma mensagem do histórico (texto, fontes e cartões)."""
+    with st.chat_message(mensagem["role"], avatar="🧑" if mensagem["role"] == "user" else "📄"):
+        st.markdown(mensagem["content"] if mensagem.get("formatado") else escapar_markdown(mensagem["content"]))
+        if mensagem.get("produto_ids"):
+            produtos = repositorio.obter_produtos(mensagem["produto_ids"])
+            if produtos:
+                exibir_grade(produtos, chave=f"msg{indice}")
+            else:
+                st.warning("Os produtos desta resposta não estão mais armazenados.")
+        if mensagem.get("fontes"):
+            exibir_fontes(mensagem["fontes"])
 
 
 # --------------------------------------
@@ -245,20 +282,20 @@ if "versao_uploader" not in st.session_state:
 # --------------------------------------
 # Cabeçalho
 # --------------------------------------
-st.markdown(
+st.html(
     """
     <div class="hero">
         <h1>📄 IntelliDoc</h1>
-        <p>Assistente de Documentação Inteligente — envie PDFs e faça perguntas sobre eles.</p>
+        <p>Catálogo inteligente — envie PDFs, pergunte sobre os produtos e veja os resultados em cartões.</p>
     </div>
-    """,
-    unsafe_allow_html=True,
+    """
 )
 
 if not chave_api_configurada():
     st.error(
-        "A chave da OpenAI não foi encontrada. Crie o arquivo `.env` na pasta do "
-        "projeto com a variável `OPENAI_API_KEY` e reinicie a aplicação."
+        "Crie o arquivo `.env` na pasta do projeto com a variável `OPENAI_API_KEY` "
+        "e reinicie a aplicação.",
+        title="A chave da OpenAI não foi encontrada",
     )
     st.stop()
 
@@ -267,7 +304,7 @@ if not chave_api_configurada():
 # Barra lateral: upload e documentos
 # --------------------------------------
 with st.sidebar:
-    st.header("📥 Documentos")
+    st.header(":material/upload_file: Documentos")
 
     arquivos = st.file_uploader(
         "Envie arquivos PDF",
@@ -275,6 +312,12 @@ with st.sidebar:
         accept_multiple_files=True,
         key=f"uploader_{st.session_state.versao_uploader}",
         help="Os arquivos são salvos em data/documents e indexados no ChromaDB.",
+    )
+
+    extrair_catalogo = st.toggle(
+        "Identificar produtos e fotos",
+        value=True,
+        help="Extrai nome, preço, família olfativa e a foto de cada produto (usa o modelo de visão da OpenAI).",
     )
 
     forcar = st.checkbox(
@@ -286,51 +329,67 @@ with st.sidebar:
     processar = st.button(
         "Processar e armazenar",
         type="primary",
-        use_container_width=True,
+        icon=":material/play_arrow:",
+        width="stretch",
         disabled=not arquivos,
     )
 
     if processar and arquivos:
-        barra = st.progress(0.0, text="Iniciando…")
         resumo = []
 
         for indice, arquivo in enumerate(arquivos, start=1):
-            barra.progress(
-                (indice - 1) / len(arquivos),
-                text=f"Processando {arquivo.name} ({indice}/{len(arquivos)})…",
-            )
             try:
-                with st.spinner(f"Gerando embeddings de {arquivo.name}…"):
-                    resumo.append(processar_upload(arquivo, forcar=forcar))
+                with st.spinner(f"Gerando embeddings de {arquivo.name} ({indice}/{len(arquivos)})…"):
+                    item = processar_upload(arquivo, forcar=forcar)
             except Exception as erro:  # noqa: BLE001
                 print(f"[IntelliDoc] Erro ao processar {arquivo.name}: {erro!r}")
-                resumo.append(
-                    {
-                        "status": "erro",
-                        "nome": arquivo.name,
-                        "mensagem": mensagem_erro_openai(erro)
-                        or "Erro inesperado ao processar o arquivo.",
-                    }
-                )
+                item = {
+                    "status": "erro",
+                    "nome": arquivo.name,
+                    "mensagem": mensagem_erro_openai(erro) or "Erro inesperado ao processar o arquivo.",
+                }
 
-        barra.progress(1.0, text="Concluído.")
+            if extrair_catalogo and item["status"] in ("processado", "ignorado"):
+                try:
+                    item["catalogo"] = extrair_produtos(item["caminho"], forcar=forcar)
+                except Exception as erro:  # noqa: BLE001
+                    print(f"[IntelliDoc] Erro ao extrair produtos de {arquivo.name}: {erro!r}")
+                    item["catalogo"] = {
+                        "status": "erro",
+                        "mensagem": mensagem_erro_openai(erro) or "Erro inesperado ao extrair os produtos.",
+                    }
+            resumo.append(item)
 
         for item in resumo:
             if item["status"] == "processado":
-                st.success(
-                    f"**{item['nome']}** armazenado: {item['paginas']} páginas, "
-                    f"{item['chunks']} chunks."
-                )
+                st.success(f"**{item['nome']}**: {item['paginas']} páginas, {item['chunks']} chunks.")
             elif item["status"] == "ignorado":
-                st.info(f"**{item['nome']}** já está indexado e não foi alterado.")
+                st.info(f"**{item['nome']}**: texto já indexado e não alterado.")
             else:
                 st.error(f"**{item['nome']}**: {item['mensagem']}")
+
+            catalogo = item.get("catalogo")
+            if not catalogo:
+                continue
+            if catalogo["status"] in ("processado", "parcial"):
+                texto = (
+                    f"{catalogo['produtos']} produtos identificados, "
+                    f"{catalogo['com_imagem']} com foto."
+                )
+                if catalogo["status"] == "parcial":
+                    st.warning(texto + f" {len(catalogo['erros'])} página(s) falharam; reprocesse depois.")
+                else:
+                    st.success(texto)
+            elif catalogo["status"] == "ignorado":
+                st.info("Produtos já extraídos desta versão do arquivo.")
+            else:
+                st.error(catalogo.get("mensagem", "Falha ao extrair os produtos."))
 
         # Limpa o seletor de arquivos para o próximo envio
         st.session_state.versao_uploader += 1
 
     st.divider()
-    st.subheader("📚 Base de conhecimento")
+    st.subheader(":material/library_books: Base de conhecimento")
 
     try:
         documentos = listar_documentos_indexados()
@@ -339,18 +398,57 @@ with st.sidebar:
         documentos = None
         st.error("Não foi possível ler o banco vetorial.")
 
-    if documentos:
-        col1, col2 = st.columns(2)
-        col1.metric("Documentos", len(documentos))
-        col2.metric("Chunks", sum(documentos.values()))
+    try:
+        resumo_catalogo = repositorio.resumo_documentos()
+    except Exception as erro:  # noqa: BLE001
+        print(f"[IntelliDoc] Erro ao ler o banco de produtos: {erro!r}")
+        resumo_catalogo = {}
+        st.error("Não foi possível ler o banco de produtos.")
 
-        for nome, total in documentos.items():
-            st.markdown(f"- 📄 {nome}  \n  <small>{total} chunks</small>", unsafe_allow_html=True)
+    if documentos:
+        total_produtos = sum(r["produtos"] for d, r in resumo_catalogo.items() if d in documentos)
+
+        with st.grid(3, min_column_width=60, gap="small"):
+            st.metric("Documentos", len(documentos))
+            st.metric("Produtos", total_produtos)
+            st.metric("Chunks", sum(documentos.values()))
+
+        pendentes = []
+        for caminho, total_chunks in documentos.items():
+            info = resumo_catalogo.get(caminho)
+            with st.container(border=True):
+                st.markdown(f":material/picture_as_pdf: **{escapar_markdown(Path(caminho).name)}**")
+                if info and info["status"] == "completo":
+                    detalhes = f"{total_chunks} chunks · {info['produtos']} produtos · {info['com_imagem'] or 0} com foto"
+                elif info:
+                    detalhes = f"{total_chunks} chunks · {info['produtos']} produtos (extração parcial)"
+                    pendentes.append(caminho)
+                else:
+                    detalhes = f"{total_chunks} chunks · produtos ainda não extraídos"
+                    pendentes.append(caminho)
+                st.caption(detalhes)
+
+        if pendentes and st.button(
+            f"Extrair produtos ({len(pendentes)} pendente{'s' if len(pendentes) > 1 else ''})",
+            icon=":material/auto_awesome:",
+            width="stretch",
+        ):
+            for caminho in pendentes:
+                try:
+                    resultado = extrair_produtos(caminho)
+                    if resultado["status"] in ("processado", "parcial"):
+                        st.success(f"{resultado['nome']}: {resultado['produtos']} produtos, {resultado['com_imagem']} com foto.")
+                    elif resultado["status"] == "erro":
+                        st.error(f"{resultado['nome']}: {resultado['mensagem']}")
+                except Exception as erro:  # noqa: BLE001
+                    print(f"[IntelliDoc] Erro ao extrair produtos de {caminho}: {erro!r}")
+                    st.error(mensagem_erro_openai(erro) or "Erro inesperado ao extrair os produtos.")
+            st.rerun()
     elif documentos is not None:
         st.caption("Nenhum documento indexado ainda.")
 
     st.divider()
-    if st.button("🧹 Limpar conversa", use_container_width=True):
+    if st.button("Limpar conversa", icon=":material/delete_sweep:", width="stretch"):
         st.session_state.mensagens = []
         st.rerun()
 
@@ -360,18 +458,16 @@ with st.sidebar:
 # --------------------------------------
 if not st.session_state.mensagens:
     st.info(
-        "Envie seus PDFs pela barra lateral (ou use os já indexados) e faça uma "
-        "pergunta abaixo. Exemplo: *Qual é o preço do Desodorante Corporal "
-        "Frangipani Flower 100ml?*"
+        "Envie seus PDFs pela barra lateral (ou use os já indexados) e faça uma pergunta abaixo. "
+        "Exemplos: *Qual é o preço do Desodorante Corporal Frangipani Flower 100ml?* · "
+        "*Quais são os produtos masculinos?* · *Quais produtos custam menos de R\\$ 100,00?*",
+        icon=":material/lightbulb:",
     )
 
-for mensagem in st.session_state.mensagens:
-    with st.chat_message(mensagem["role"], avatar="🧑" if mensagem["role"] == "user" else "📄"):
-        st.markdown(mensagem["content"])
-        if mensagem.get("fontes"):
-            exibir_fontes(mensagem["fontes"])
+for indice, mensagem in enumerate(st.session_state.mensagens):
+    exibir_mensagem(indice, mensagem)
 
-pergunta = st.chat_input("Pergunte algo sobre os seus documentos…")
+pergunta = st.chat_input("Pergunte sobre os produtos ou o conteúdo dos seus documentos…")
 
 if pergunta is not None:
     pergunta = pergunta.strip()
@@ -380,38 +476,50 @@ if pergunta is not None:
         st.warning("Digite uma pergunta válida.")
     else:
         st.session_state.mensagens.append({"role": "user", "content": pergunta})
+        exibir_mensagem(len(st.session_state.mensagens) - 1, st.session_state.mensagens[-1])
 
-        with st.chat_message("user", avatar="🧑"):
-            st.markdown(pergunta)
+        resposta = None
+        try:
+            # 1) Perguntas sobre produtos: consulta ao catálogo estruturado inteiro
+            with st.spinner("Consultando o catálogo de produtos…"):
+                indexados = list(documentos) if documentos else []
+                resultado = busca.buscar_produtos(pergunta, indexados)
 
-        with st.chat_message("assistant", avatar="📄"):
-            resposta = None
-            fontes = []
-
-            try:
+            if resultado and resultado.produtos:
+                resposta = {
+                    "role": "assistant",
+                    "content": resultado.texto,
+                    "formatado": True,
+                    "produto_ids": [p["id"] for p in resultado.produtos],
+                }
+            else:
+                # 2) Perguntas gerais (ou nenhum produto encontrado): RAG de texto
                 with st.spinner("Buscando nos documentos…"):
                     resultados = buscar_chunks(pergunta)
 
                 if not resultados:
-                    resposta = (
-                        "Não encontrei informações relevantes nos documentos "
-                        "indexados. Verifique se algum PDF já foi processado."
+                    texto = (
+                        "Não encontrei informações relevantes nos documentos indexados. "
+                        "Verifique se algum PDF já foi processado."
                     )
+                    fontes = []
                 else:
                     with st.spinner("Gerando resposta…"):
-                        resposta = gerar_resposta(pergunta, resultados)
+                        texto = gerar_resposta(pergunta, resultados)
                     fontes = extrair_fontes(resultados)
 
-            except Exception as erro:  # noqa: BLE001
-                print(f"[IntelliDoc] Erro ao responder: {erro!r}")
-                st.error(
-                    mensagem_erro_openai(erro)
-                    or "Ocorreu um erro inesperado ao gerar a resposta."
-                )
+                if resultado is not None:
+                    texto = (
+                        "Nenhum produto do catálogo estruturado atendeu a esse critério. "
+                        "Veja abaixo o que encontrei nos trechos do documento:\n\n" + texto
+                    )
+                resposta = {"role": "assistant", "content": texto, "fontes": fontes}
 
-            if resposta:
-                st.markdown(resposta)
-                exibir_fontes(fontes)
-                st.session_state.mensagens.append(
-                    {"role": "assistant", "content": resposta, "fontes": fontes}
-                )
+        except Exception as erro:  # noqa: BLE001
+            print(f"[IntelliDoc] Erro ao responder: {erro!r}")
+            with st.chat_message("assistant", avatar="📄"):
+                st.error(mensagem_erro_openai(erro) or "Ocorreu um erro inesperado ao gerar a resposta.")
+
+        if resposta:
+            st.session_state.mensagens.append(resposta)
+            exibir_mensagem(len(st.session_state.mensagens) - 1, resposta)
