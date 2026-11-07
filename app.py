@@ -5,7 +5,19 @@
 # ======================================
 
 # Importanto dependências para o projeto
-from pathlib import Path
+
+ 
+from dotenv import load_dotenv  # Carrega as variáveis de ambiente do arquivo .env
+load_dotenv()
+
+from criar_db import (
+    validar_documento,
+    extrair_texto_pdf,
+    dividir_texto_chunks,
+    armazenar_chunks,
+    buscar_chunks,
+    gerar_resposta
+)
 
 # Lista que armazenará os documentos cadastrados
 documentos = []
@@ -103,13 +115,22 @@ def excluir_documento():
 
     print("\nDocumento não encontrado.")
 
-def validar_documento(caminho):
-    arquivo = Path(caminho)
+def consultar_intellidoc():
 
-    if arquivo.exists() and arquivo.is_file() and arquivo.suffix.lower() == ".pdf":
-        return True
-    else:
-        return False
+    print("\n--- Consultar IntelliDoc ---")
+
+    pergunta = input("\nDigite sua pergunta: ")
+
+    if not pergunta.strip():
+        print("\nDigite uma pergunta válida.")
+        return
+
+    resultados = buscar_chunks(pergunta)
+
+    resposta = gerar_resposta(pergunta, resultados)
+
+    print("\n--- Resposta do IntelliDoc ---")
+    print(resposta)
 
 def main():
 
@@ -119,6 +140,8 @@ def main():
         print("2 - Listar documentos")
         print("3 - Consultar documento")
         print("4 - Excluir documento")
+        print("5 - Extrair texto de documento")
+        print("6 - Consultar IntelliDoc")
         print("0 - Sair")
         print("================================")
 
@@ -135,6 +158,21 @@ def main():
 
         elif opcao == "4":
             excluir_documento()
+
+        elif opcao == "5":
+            resultado = extrair_texto_pdf()
+
+            if resultado:
+                documento, caminho = resultado
+
+                chunks = dividir_texto_chunks(documento, caminho)
+
+                print("\nTotal de chunks:", len(chunks))
+
+                armazenar_chunks(chunks)
+
+        elif opcao == "6":
+            consultar_intellidoc()
 
         elif opcao == "0":
             print("\nEncerrando o IntelliDoc...")
