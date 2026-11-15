@@ -11,3 +11,10 @@ data/produtos.sqlite3
 # Arquivos locais de ferramentas
 tempCodeRunnerFile.py
 .claude/
+
+# PDFs de terceiros usados nos testes (não publicar)
+data/documents/
+
+# Configurações locais de editores
+.idea/
+.vscode/
