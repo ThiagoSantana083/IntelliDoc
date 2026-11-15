@@ -8,6 +8,8 @@
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-vector%20store-FF6F00)
 ![Streamlit](https://img.shields.io/badge/Streamlit-interface-FF4B4B?logo=streamlit&logoColor=white)
 
+**[▶ Testar a demonstração online](https://huggingface.co/spaces/ThiagoSantanara/IntelliDoc)** (Hugging Face Spaces, com um catálogo já processado)
+
 <!-- Adicione aqui uma captura de tela ou um GIF da interface, por exemplo:
 ![Demonstração do IntelliDoc](docs/demo.gif) -->
 
@@ -156,7 +158,7 @@ python -m catalogo.fotos --forcar                   # refaz só as fotos, sem ex
 
 - Os campos extraídos foram pensados para catálogos de cosméticos e perfumaria.
 - Depende da API da OpenAI, que tem custo por uso, principalmente no modelo de visão.
-- Próximos passos: testes automatizados, avaliação da qualidade das respostas com um conjunto de perguntas de referência e uma demonstração online.
+- Próximos passos: testes automatizados e avaliação da qualidade das respostas com um conjunto de perguntas de referência.
 
 ---
 
